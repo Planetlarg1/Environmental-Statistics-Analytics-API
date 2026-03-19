@@ -274,7 +274,12 @@ def delete_station(station_id: int, db: Session = Depends(get_db)):
             detail=f"Station with id {station_id} not found."
         )
     
-    # ADD LOGIC TO CHECK DEPENDENCIES
+    # Check for dependencies
+    if station.observations:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot delete station {station.name} while it has dependencies."
+        )
 
     # Delete station
     db.delete(station)
