@@ -14,7 +14,10 @@ app = FastAPI(
 
 Base.metadata.create_all(bind=engine)
 
-# ROUTES
+#################
+# SYSTEM ROUTES #
+#################
+
 # Root
 @app.get("/")
 def root():
@@ -26,6 +29,10 @@ def root():
 def health_check():
     return {"status": "ok"}
 
+
+#################
+# CITIES ROUTES #
+#################
 
 # POST Cities
 @app.post("/cities", response_model=schemas.CityResponse, status_code=status.HTTP_201_CREATED)
@@ -66,6 +73,62 @@ def get_city(city_id: int, db: Session = Depends(get_db)):
         )
     return city
 
+
+# PUT City by ID
+@app.put("/cities/{city_id}", response_model=schemas.CityResponse)
+def update_city(city_id: int, city_update: schemas.CityUpdate, db: Session = Depends(get_db)):
+    city = db.query(models.City).filter(models.City.id == city_id).first()
+    # Check valid id
+    if not city:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"City with id {city_id} not found."
+        )
+    
+    # Check if new name is already taken
+    existing_city = (
+        db.query(models.City)
+        .filter(models.City.name ==  city_update.name, models.City.id != city_id)
+        .first()
+    )
+    if existing_city:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Another city already exists with the name {city_update.name}."
+        )
+    
+    city.name = city_update.name
+    db.commit()
+    db.refresh(city)
+    return city
+    
+
+# DELETE City BY ID
+@app.delete("/cities/{city_id}", status_code=status.HTTP_200_OK)
+def delete_city(city_id: int, db: Session = Depends(get_db)):
+    city = db.query(models.City).filter(models.City.id == city_id).first()
+    # Check if city exists
+    if not city:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"City with id {city_id} not found."
+        )
+    
+    # Check for dependencies
+    if city.stations:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot delete city {city.name} while it has dependencies."
+        )
+    
+    db.delete(city)
+    db.commit()
+    return {"message": f"City {city.name} has been successfully deleted."}
+
+
+###################
+# STATIONS ROUTES #
+###################
 
 # POST Stations
 @app.post("/stations", response_model=schemas.StationResponse, status_code=status.HTTP_201_CREATED)
@@ -141,3 +204,79 @@ def get_station(station_id: int, db: Session = Depends(get_db)):
             detail=f"Station with id {station_id} not found."
         )
     return station
+
+
+# PUT Station BY ID
+@app.put("/stations/{station_id}", response_model=schemas.StationResponse)
+def update_station(station_id: int, station_update: schemas.StationUpdate, db: Session = Depends(get_db)):
+    station = db.query(models.Station).filter(models.Station.id == station_id).first()
+    # Check valid id
+    if not station:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Station with id {station_id} not found."
+        )
+    
+    # Check valid city_id
+    city = db.query(models.City).filter(models.City.id == station_update.city_id).first()
+    if not city:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"City with id {station_update.city_id} not found."
+        )
+    
+    # Check valid station -> city mapping
+    if not station_allowed_for_city(city.name, station_update.name):
+        correct_station = correct_station_for_city(city.name)
+
+        if correct_station:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{station_update.name} is not the approved station for {city.name}. The allowed station is {correct_station}."
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"No approved station mapping exists for {city.name}."
+            )
+        
+    # Check already exists
+    existing_station = (
+        db.query(models.Station)
+        .filter(models.Station.name == station_update.name, models.Station.id != station_id)
+        .first()
+    )
+    if existing_station:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Another station already exists with the name {station_update.name}."
+        )
+
+    # Update station
+    station.name = station_update.name
+    station.city_id = station_update.city_id
+    station.latitude = station_update.latitude
+    station.longitude = station_update.longitude
+
+    db.commit()
+    db.refresh(station)
+    return station
+
+
+# DELETE Station BY ID
+@app.delete("/stations/{station_id}", status_code=status.HTTP_200_OK)
+def delete_station(station_id: int, db: Session = Depends(get_db)):
+    station = db.query(models.Station).filter(models.Station.id == station_id).first()
+    # Check exists
+    if not station:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Station with id {station_id} not found."
+        )
+    
+    # ADD LOGIC TO CHECK DEPENDENCIES
+
+    # Delete station
+    db.delete(station)
+    db.commit()
+    return {"message": f"Station {station.name} has been successfully deleted."}
