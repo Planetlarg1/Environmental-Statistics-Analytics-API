@@ -4,6 +4,7 @@ from app import models, schemas
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from app.station_mappings import station_allowed_for_city, correct_station_for_city
+from app.auth import check_creds, gen_access_token
 
 # CONFIG
 app = FastAPI(
@@ -534,3 +535,28 @@ def delete_observation(observation_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": f"Observation with id {observation_id} has been successfully deleted."}
+
+
+###############
+# AUTH ROUTES #
+###############
+
+# Admin Login
+@app.post("/admin_login", response_model=schemas.TokenResponse)
+def admin_login(admin_creds: schemas.AdminLogin, db: Session = Depends(get_db)):
+    admin = check_creds(admin_creds.username, admin_creds.password, db)
+
+    # Check exists
+    if not admin:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password."
+        )
+    
+    access_token = gen_access_token(data={"sub": admin.username})
+
+    # Return authorising token, allowing access to locked endpoints
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+#
