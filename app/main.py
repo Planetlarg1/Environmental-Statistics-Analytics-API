@@ -4,7 +4,7 @@ from app import models, schemas
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from app.station_mappings import station_allowed_for_city, correct_station_for_city
-from app.auth import check_creds, gen_access_token
+from app.auth import check_creds, gen_access_token, get_current_admin, hash_password
 
 # CONFIG
 app = FastAPI(
@@ -37,7 +37,7 @@ def health_check():
 
 # POST Cities
 @app.post("/cities", response_model=schemas.CityResponse, status_code=status.HTTP_201_CREATED)
-def create_city(city: schemas.CityCreate, db: Session = Depends(get_db)):
+def create_city(city: schemas.CityCreate, db: Session = Depends(get_db), current_admin: models.Admin = Depends(get_current_admin)):
     # Check if already exists
     existing_city = db.query(models.City).filter(models.City.name == city.name).first()
     if existing_city:
@@ -77,7 +77,7 @@ def get_city(city_id: int, db: Session = Depends(get_db)):
 
 # PUT City by ID
 @app.put("/cities/{city_id}", response_model=schemas.CityResponse)
-def update_city(city_id: int, city_update: schemas.CityUpdate, db: Session = Depends(get_db)):
+def update_city(city_id: int, city_update: schemas.CityUpdate, db: Session = Depends(get_db), current_admin: models.Admin = Depends(get_current_admin)):
     city = db.query(models.City).filter(models.City.id == city_id).first()
     # Check valid id
     if not city:
@@ -106,7 +106,7 @@ def update_city(city_id: int, city_update: schemas.CityUpdate, db: Session = Dep
 
 # DELETE City BY ID
 @app.delete("/cities/{city_id}", status_code=status.HTTP_200_OK)
-def delete_city(city_id: int, db: Session = Depends(get_db)):
+def delete_city(city_id: int, db: Session = Depends(get_db), current_admin: models.Admin = Depends(get_current_admin)):
     city = db.query(models.City).filter(models.City.id == city_id).first()
     # Check if city exists
     if not city:
@@ -133,7 +133,7 @@ def delete_city(city_id: int, db: Session = Depends(get_db)):
 
 # POST Stations
 @app.post("/stations", response_model=schemas.StationResponse, status_code=status.HTTP_201_CREATED)
-def create_station(station: schemas.StationCreate, db: Session = Depends(get_db)):
+def create_station(station: schemas.StationCreate, db: Session = Depends(get_db), current_admin: models.Admin = Depends(get_current_admin)):
     # Check for associated city
     city = db.query(models.City).filter(models.City.id == station.city_id).first()
     if not city:
@@ -209,7 +209,7 @@ def get_station(station_id: int, db: Session = Depends(get_db)):
 
 # PUT Station BY ID
 @app.put("/stations/{station_id}", response_model=schemas.StationResponse)
-def update_station(station_id: int, station_update: schemas.StationUpdate, db: Session = Depends(get_db)):
+def update_station(station_id: int, station_update: schemas.StationUpdate, db: Session = Depends(get_db), current_admin: models.Admin = Depends(get_current_admin)):
     station = db.query(models.Station).filter(models.Station.id == station_id).first()
     # Check valid id
     if not station:
@@ -266,7 +266,7 @@ def update_station(station_id: int, station_update: schemas.StationUpdate, db: S
 
 # DELETE Station BY ID
 @app.delete("/stations/{station_id}", status_code=status.HTTP_200_OK)
-def delete_station(station_id: int, db: Session = Depends(get_db)):
+def delete_station(station_id: int, db: Session = Depends(get_db), current_admin: models.Admin = Depends(get_current_admin)):
     station = db.query(models.Station).filter(models.Station.id == station_id).first()
     # Check exists
     if not station:
@@ -294,7 +294,7 @@ def delete_station(station_id: int, db: Session = Depends(get_db)):
 
 # POST Observations
 @app.post("/observations", response_model=schemas.ObservationCreate, status_code=status.HTTP_201_CREATED)
-def create_observation(observation: schemas.ObservationCreate, db: Session = Depends(get_db)):
+def create_observation(observation: schemas.ObservationCreate, db: Session = Depends(get_db), current_admin: models.Admin = Depends(get_current_admin)):
     # Check station exists
     station = db.query(models.Station).filter(models.Station.id == observation.station_id).first()
     if not station:
@@ -453,7 +453,7 @@ def get_observation(observation_id: int, db: Session = Depends(get_db)):
 
 # PUT Observation BY ID
 @app.put("/observations/{observation_id}", response_model=schemas.ObservationUpdate)
-def update_observation(observation_id: int, observation_update: schemas.ObservationUpdate, db: Session = Depends(get_db)):
+def update_observation(observation_id: int, observation_update: schemas.ObservationUpdate, db: Session = Depends(get_db), current_admin: models.Admin = Depends(get_current_admin)):
     observation = (
         db.query(models.Observation)
         .filter(models.Observation.id == observation_id)
@@ -516,7 +516,7 @@ def update_observation(observation_id: int, observation_update: schemas.Observat
 
 # DELETE Observation By ID
 @app.delete("/observations/{observation_id}", status_code=status.HTTP_200_OK)
-def delete_observation(observation_id: int, db: Session = Depends(get_db)):
+def delete_observation(observation_id: int, db: Session = Depends(get_db), current_admin: models.Admin = Depends(get_current_admin)):
     observation = (
         db.query(models.Observation)
         .filter(models.Observation.id == observation_id)
@@ -559,4 +559,37 @@ def admin_login(admin_creds: schemas.AdminLogin, db: Session = Depends(get_db)):
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-#
+# Admin Register - requires already logged in admin
+@app.post("/admin_register", response_model=schemas.AdminResponse, status_code=status.HTTP_201_CREATED)
+def create_admin(
+    admin_data: schemas.AdminCreate,
+    db: Session = Depends(get_db),
+    current_admin: models.Admin = Depends(get_current_admin)
+):
+    # Check if username is taken
+    existing_admin = db.query(models.Admin).filter(models.Admin.username == admin_data.username).first()
+    if existing_admin:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Username {admin_data.username} is taken."
+        )
+    
+    # Create and add new admin to db
+    new_admin= models.Admin(
+        username=admin_data.username,
+        password_hash=hash_password(admin_data.password)
+    )
+
+    db.add(new_admin)
+    db.commit()
+    db.refresh(new_admin)
+    return new_admin
+
+
+# GET admins
+@app.get("/admins", response_model=List[schemas.AdminResponse])
+def list_admins(
+    db: Session = Depends(get_db),
+    current_admin: models.Admin = Depends(get_current_admin)
+):
+    return db.query(models.Admin).all()
