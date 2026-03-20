@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Query
 from app.database import Base, engine, get_db
 from app import models, schemas
 from typing import List, Optional
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.station_mappings import station_allowed_for_city, correct_station_for_city
 from app.auth import check_creds, gen_access_token, get_current_admin, hash_password
@@ -391,7 +392,7 @@ def get_observations(
         city = db.query(models.City).filter(models.City.id == city_id).first()
         if not city:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"City with id {city_id} not found"
             )
         
@@ -593,3 +594,192 @@ def list_admins(
     current_admin: models.Admin = Depends(get_current_admin)
 ):
     return db.query(models.Admin).all()
+
+
+####################
+# ANALYTICS ROUTES #
+####################
+
+# GET Summary - Returns no. observations and avg of data across an optional given time range for a given city
+@app.get("/cities/{city_id}/summary", response_model=schemas.CitySummaryResponse)
+def get_city_summary(
+    city_id: int,
+    # Optional time range filters
+    start_year: Optional[int] = None,
+    start_month: Optional[int] = None,
+    end_year: Optional[int] = None,
+    end_month: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    # Check city exists
+    city = db.query(models.City).filter(models.City.id == city_id).first()
+    if not city:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"City with id {city_id} not found"
+        )
+        
+    # If month is given then year is required
+    if ((start_month is not None and start_year is None)
+        or (end_month is not None and end_year is None)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot filter by month without providing a year."
+        )
+    
+    # Validate month ranges
+    if ((start_month is not None and (start_month < 1 or start_month > 12)) 
+        or (end_month is not None and (end_month < 1 or end_month > 12))):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid month index."
+        )
+    
+    # Check start before end
+    if start_year is not None and end_year is not None:
+        if (start_year > end_year):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Start date must come before end date."
+            )
+        elif ((start_year == end_year) 
+            and (start_month is not None and end_month is not None)
+            and (start_month > end_month)):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Start date must come before end date."
+            )
+        
+    # Calculate summary data and filter by city_id
+    query = (
+        db.query(
+            func.count(models.Observation.id),
+            func.avg(models.Observation.tmax),
+            func.avg(models.Observation.tmin),
+            func.avg(models.Observation.af),
+            func.avg(models.Observation.rain),
+            func.avg(models.Observation.sun)
+        )
+        .join(models.Station, models.Observation.station_id == models.Station.id)
+        .filter(models.Station.city_id == city_id)
+    )
+
+    # Filter by start date
+    if start_year is not None:
+        if start_month is not None:
+            query = query.filter(
+                (models.Observation.year > start_year) |
+                (
+                    (models.Observation.year == start_year) &
+                    (models.Observation.month >= start_month)
+                )
+            )
+        else:
+            query = query.filter(models.Observation.year >= start_year)
+
+    # Filter by end date
+    if end_year is not None:
+        if end_month is not None:
+            query = query.filter(
+                (models.Observation.year < end_year) |
+                (
+                    (models.Observation.year == end_year) &
+                    (models.Observation.month <= end_month)
+                )
+            )
+        else:
+            query = query.filter(models.Observation.year <= end_year)
+
+    # Return summary data
+    summary = query.first()
+
+    observation_count, avg_tmax, avg_tmin, avg_af, avg_rain, avg_sun = summary
+
+    return {
+        "city_id": city.id,
+        "city_name": city.name,
+        "observation_count": observation_count,
+        "avg_tmax": round(avg_tmax, 2) if isinstance(avg_tmax, float) else None,
+        "avg_tmin": round(avg_tmin, 2) if isinstance(avg_tmin, float) else None,
+        "avg_af": round(avg_af, 2) if isinstance(avg_af, float) else None,
+        "avg_rain": round(avg_rain, 2) if isinstance(avg_rain, float) else None,
+        "avg_sun": round(avg_sun, 2) if isinstance(avg_sun, float) else None
+    }
+
+
+# GET Trends - Returns yearly avg per year over a given timeframe for a given metric in a city
+@app.get("/cities/{city_id}/trends", response_model=schemas.CityTrendResponse)
+def get_trends(
+    city_id: int,
+    metric: str,
+    start_year: Optional[int] = None,
+    end_year: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    # Check city exists
+    city = db.query(models.City).filter(models.City.id == city_id).first()
+    if not city:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"City with id {city_id} not found."
+        )
+    
+    # Check metric
+    valid_metrics = {
+        "tmax": models.Observation.tmax,
+        "tmin": models.Observation.tmin,
+        "af": models.Observation.af,
+        "rain": models.Observation.rain,
+        "sun": models.Observation.sun
+    }
+
+    if metric not in valid_metrics:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{metric} is not a valid metric."
+        )
+    
+    # Check start before end
+    if (start_year is not None and end_year is not None
+        and (start_year > end_year)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Start year must come before end year."
+        )
+    
+    # Filter for metrics and city
+    metric_column = valid_metrics[metric]
+
+    query = (
+        db.query(
+            models.Observation.year,
+            func.avg(metric_column).label("value")
+        )
+        .join(models.Station, models.Observation.station_id == models.Station.id)
+        .filter(models.Station.city_id == city_id)
+    )
+
+    # Filter by start year
+    if start_year is not None:
+        query = query.filter(models.Observation.year >= start_year)
+    
+    # Filter by end year
+    if end_year is not None:
+        query = query.filter(models.Observation.year <= end_year)
+
+    # Group by year, average, and sort
+    results = (
+        query.group_by(models.Observation.year)
+        .order_by(models.Observation.year)
+        .all()
+    )
+
+    # Set trend points
+    trend_points = [{"year": year, "value": round(value, 2) if isinstance(value, float) else None} for year, value in results]
+
+    return {
+        "city_id": city.id,
+        "city_name": city.name,
+        "metric": metric,
+        "trend_points": trend_points
+    }
