@@ -783,3 +783,220 @@ def get_trends(
         "metric": metric,
         "trend_points": trend_points
     }
+
+
+# GET Anomalies - Returns years and values where a given metric is far from the mean in a given optional timeframe in a given city
+@app.get("/cities/{city_id}/anomalies", response_model=schemas.CityAnomaliesResponse)
+def get_city_anomalies(
+    city_id: int,
+    metric: str,
+    start_year: Optional[int] = None,
+    end_year: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    threshold_sd = 2.0
+
+    # Check city exists
+    city = db.query(models.City).filter(models.City.id == city_id).first()
+    if not city:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"City with id {city_id} not found."
+        )
+    
+    # Check metric
+    valid_metrics = {
+        "tmax": models.Observation.tmax,
+        "tmin": models.Observation.tmin,
+        "af": models.Observation.af,
+        "rain": models.Observation.rain,
+        "sun": models.Observation.sun
+    }
+
+    if metric not in valid_metrics:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{metric} is not a valid metric."
+        )
+    
+    # Check start before end
+    if (start_year is not None and end_year is not None
+        and (start_year > end_year)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Start year must come before end year."
+        )
+    
+    metric_column = valid_metrics[metric]
+
+    # Calculate average data and filter by city_id
+    query = (
+        db.query(
+            models.Observation.year,
+            func.avg(metric_column).label("yearly_average")
+        )
+        .join(models.Station, models.Observation.station_id == models.Station.id)
+        .filter(models.Station.city_id == city_id)
+    )
+
+    # Filter by start year
+    if start_year is not None:
+        query = query.filter(models.Observation.year >= start_year)
+    
+    # Filter by end year
+    if end_year is not None:
+        query = query.filter(models.Observation.year <= end_year)
+
+    # Calculate yearly results
+    yearly_results = (
+        query.group_by(models.Observation.year)
+        .order_by(models.Observation.year)
+        .all()
+    )
+
+    # Remove unusable non-numeric values
+    points = [
+        {"year": year, "value": float(value)}
+        for year, value in yearly_results
+        if value is not None
+    ]
+
+    # No usable data
+    if not points:
+        return {
+            "city_id": city.id,
+            "city_name": city.name,
+            "metric": metric,
+            "threshold_sd": threshold_sd,
+            "anomaly_count": 0,
+            "anomalies": []
+        }
+    
+    # Calculate baseline mean
+    values = [point["value"] for point in points]
+    mean_value = sum(values) / len(values)
+
+    # Calculate standard deviation
+    sd = (sum((value - mean_value) ** 2 for value in values) / len(values)) ** 0.5
+
+    anomalies = []
+
+    # Calculate anomalies
+    threshold_distance = threshold_sd * sd
+    for point in points:
+        difference = point["value"] - mean_value
+
+        if abs(difference) >= threshold_distance:
+            anomalies.append({
+                "year": point["year"],
+                "yearly_average": round(point["value"], 2) if isinstance(point["value"], float) else None,
+                "baseline_average": round(mean_value, 2) if isinstance(mean_value, float) else None,
+                "difference_from_mean": round(difference, 2) if isinstance(difference, float) else None
+            })
+
+    return {
+        "city_id": city.id,
+        "city_name": city.name,
+        "metric": metric,
+        "threshold_sd": threshold_sd,
+        "anomaly_count": len(anomalies),
+        "anomalies": anomalies
+    }
+
+
+# GET Comparison - Returns averages and difference for a metric between two cities in a given time range
+@app.get("/compare", response_model=schemas.CityComparisonResponse)
+def compare_cities(
+    city_a_id: int,
+    city_b_id: int,
+    metric: str,
+    start_year: Optional[int] = None,
+    end_year: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    # Check cities exists
+    city_a = db.query(models.City).filter(models.City.id == city_a_id).first()
+    if not city_a:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"City with id {city_a_id} not found."
+        )
+    
+    city_b = db.query(models.City).filter(models.City.id == city_b_id).first()
+    if not city_b:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"City with id {city_b_id} not found."
+        )
+    
+    # Check metric
+    valid_metrics = {
+        "tmax": models.Observation.tmax,
+        "tmin": models.Observation.tmin,
+        "af": models.Observation.af,
+        "rain": models.Observation.rain,
+        "sun": models.Observation.sun
+    }
+
+    if metric not in valid_metrics:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{metric} is not a valid metric."
+        )
+    
+    # Check start before end
+    if (start_year is not None and end_year is not None
+        and (start_year > end_year)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Start year must come before end year."
+        )
+    
+    metric_column = valid_metrics[metric]
+
+    # Helper function for comparison endpoint - calc count and avgs
+    def get_city_metric_summary(city_id: int):
+        query = (
+            db.query(
+                func.count(models.Observation.id),
+                func.avg(metric_column)
+            )
+            .join(models.Station, models.Observation.station_id == models.Station.id)
+            .filter(models.Station.city_id == city_id)
+        )
+
+        # Filter by start year
+        if start_year is not None:
+            query = query.filter(models.Observation.year >= start_year)
+        
+        # Filter by end year
+        if end_year is not None:
+            query = query.filter(models.Observation.year <= end_year)
+
+        return query.first()
+    
+    city_a_count, city_a_avg = get_city_metric_summary(city_a_id)
+    city_b_count, city_b_avg = get_city_metric_summary(city_b_id)
+
+    difference = None
+    if city_a_avg is not None and city_b_avg is not None:
+        difference = city_a_avg - city_b_avg
+
+    return {
+        "metric": metric,
+        "start_year": start_year,
+        "end_year": end_year,
+        "city_a": {
+            "city_id": city_a.id,
+            "city_name": city_a.name,
+            "observation_count": city_a_count,
+            "average": round(city_a_avg, 2) if isinstance(city_a_avg, float) else None
+        },
+        "city_b": {
+            "city_id": city_b.id,
+            "city_name": city_b.name,
+            "observation_count": city_b_count,
+            "average": round(city_b_avg, 2) if isinstance(city_b_avg, float) else None
+        },
+        "difference": abs(round(difference, 2)) if isinstance(difference, float) else None
+    }

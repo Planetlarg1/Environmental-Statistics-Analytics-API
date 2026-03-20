@@ -103,3 +103,31 @@ class CityTrendResponse(BaseModel):
     city_name: str
     metric: str
     trend_points: list[TrendPoint]
+
+class CityAnomalyPoint(BaseModel):
+    year: int
+    yearly_average: Optional[float] = None
+    baseline_average: Optional[float] = None
+    difference_from_mean: Optional[float] = None
+
+class CityAnomaliesResponse(BaseModel):
+    city_id: int
+    city_name: str
+    metric: str
+    threshold_sd: float
+    anomaly_count: int
+    anomalies: list[CityAnomalyPoint]
+
+class CityComparisonItem(BaseModel):
+    city_id: int
+    city_name: str
+    observation_count: int
+    average: Optional[float] = None
+
+class CityComparisonResponse(BaseModel):
+    metric: str
+    start_year: Optional[int] = None
+    end_year: Optional[int] = None
+    city_a: CityComparisonItem
+    city_b: CityComparisonItem
+    difference: Optional[float] = None
