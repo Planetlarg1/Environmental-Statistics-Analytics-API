@@ -61,14 +61,22 @@ class ObservationResponse(ObservationBase):
         from_attributes = True
 
 
-# USERS
-class UserCreate(BaseModel):
+# ADMINS
+class AdminCreate(BaseModel):
     username: str
     password: str
 
-class UserResponse(BaseModel):
+class AdminLogin(BaseModel):
+    username: str
+    password: str
+
+class AdminResponse(BaseModel):
     id: int
     username: str
 
     class Config:
         from_attributes = True
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
